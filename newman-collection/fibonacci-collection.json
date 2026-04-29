@@ -1,0 +1,48 @@
+{
+  "info": {
+    "name": "ARSW Lab10 - Fibonacci Load Test",
+    "_postman_id": "arsw-lab10-fibonacci",
+    "description": "Colección para prueba de carga con 10 peticiones concurrentes a Azure Function Fibonacci",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Fibonacci nth=1000000",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"nth\": 1000000}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/Fibonacci",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "Fibonacci"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
+              "pm.test('Response time under 10s', function() { pm.expect(pm.response.responseTime).to.be.below(10000); });",
+              "const responseText = pm.response.text();",
+              "pm.test('Response is a number', function() { pm.expect(responseText).to.match(/^\\d+$/); });",
+              "console.log('nth=1000000 | Time: ' + pm.response.responseTime + 'ms | Length: ' + responseText.length + ' digits');"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://<YOUR_FUNCTION_APP_NAME>.azurewebsites.net",
+      "description": "Base URL de tu Azure Function App"
+    }
+  ]
+}
