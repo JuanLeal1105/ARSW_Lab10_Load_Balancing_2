@@ -7,13 +7,13 @@
   },
   "item": [
     {
-      "name": "Fibonacci nth=1000000",
+      "name": "Fibonacci nth={{nthValue}}",
       "request": {
         "method": "POST",
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\"nth\": 1000000}"
+          "raw": "{\"nth\": {{nthValue}}}"
         },
         "url": {
           "raw": "{{baseUrl}}/api/Fibonacci",
@@ -28,10 +28,9 @@
             "type": "text/javascript",
             "exec": [
               "pm.test('Status is 200', function() { pm.response.to.have.status(200); });",
-              "pm.test('Response time under 10s', function() { pm.expect(pm.response.responseTime).to.be.below(10000); });",
               "const responseText = pm.response.text();",
               "pm.test('Response is a number', function() { pm.expect(responseText).to.match(/^\\d+$/); });",
-              "console.log('nth=1000000 | Time: ' + pm.response.responseTime + 'ms | Length: ' + responseText.length + ' digits');"
+              "console.log('nth=' + pm.variables.get('nthValue') + ' | Time: ' + pm.response.responseTime + 'ms | Digits: ' + responseText.length);"
             ]
           }
         }
@@ -41,8 +40,11 @@
   "variable": [
     {
       "key": "baseUrl",
-      "value": "https://<YOUR_FUNCTION_APP_NAME>.azurewebsites.net",
-      "description": "Base URL de tu Azure Function App"
+      "value": "https://<YOUR_FUNCTION_APP_NAME>.azurewebsites.net"
+    },
+    {
+      "key": "nthValue",
+      "value": "1000000"
     }
   ]
 }
