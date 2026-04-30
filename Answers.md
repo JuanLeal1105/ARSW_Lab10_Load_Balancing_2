@@ -31,6 +31,14 @@ ARSW_Lab10_Load_Balancing/
     ├── fibonacci-collection.json
     └── run-concurrent.js
 ```
+
+### **Prueba del despliegue**
+Luego de seguir las instrucciones dadas por el profesor podemos probar la función de Fibonacci para corroborar que en efecto se subió correctamente a Azure:
+![alt text](imagesEvidence/MiniTest_Azure.png)
+
+Y también desde Visual Studio Code podemos probar:
+![alt text](imagesEvidence/MiniTest_VSC.png)
+
 ---
 ## **Parte 1. Prueba concurrente con Newman**
 ### **1. Instalar dependencias del runner**
@@ -75,6 +83,7 @@ Azure detecta automáticamente todas las subcarpetas con `function.json` y regis
 
 ### **3. Verificar en el portal**
 En `portal.azure.com` dentro del Function App creada deben de aparecer ambas funciones: `Fibonacci` y `FibonacciMemo`.
+![alt text](imagesEvidence/FunctionApp.png)
 
 ### **4. Secuencia de pruebas**
 ```bash
@@ -200,3 +209,110 @@ Se factura por hora de instancia según el SKU: EP1 ~$0.173/h, EP2 ~$0.346/h, EP
 #### **Plan Dedicated — Plan fijo del App Service**
 Se paga el App Service Plan asociado (B1 ~$13/mes, S1 ~$73/mes, P1v3 ~$138/mes). Las funciones no tienen costo adicional por ejecución.
 
+---
+## **Informe de Resultados**
+### **Parte 1 — Prueba de carga concurrente (Newman)**
+Se ejecutaron 10 peticiones HTTP POST simultáneas con `Promise.all()` en Newman contra `/api/Fibonacci` con `nth=1,000,000`. Todas las peticiones se dispararon en el mismo tick del event loop de Node.js, garantizando concurrencia real.
+
+![alt text](imagesEvidence/NewmanResult.png)
+![alt text](imagesEvidence/NewmanResult_Logs.png)
+
+
+#### Datos observados
+| Request | HTTP Status | Tiempo de respuesta | Observación |
+|---|---|---|---|
+| [7]  | 200 OK | 6,746 ms  | Instancia caliente — cálculo rápido |
+| [2]  | 200 OK | 57,939 ms | Instancia fría — cold start + cálculo |
+| [1]  | 200 OK | 57,887 ms | Instancia fría — cold start + cálculo |
+| [3]  | 200 OK | 57,848 ms | Instancia fría — cold start + cálculo |
+| [10] | 200 OK | 57,768 ms | Instancia fría — cold start + cálculo |
+| [9]  | 200 OK | 57,810 ms | Instancia fría — cold start + cálculo |
+| [6]  | 200 OK | 57,791 ms | Instancia fría — cold start + cálculo |
+| [8]  | 200 OK | 57,909 ms | Instancia fría — cold start + cálculo |
+| [5]  | 200 OK | 57,827 ms | Instancia fría — cold start + cálculo |
+| [4]  | 200 OK | 57,961 ms | Instancia fría — cold start + cálculo |
+
+| Métrica | Valor |
+|---|---|
+| Total requests | 10 |
+| Successful (200) | 10 |
+| Failed | 0 |
+| Wall-clock time | 58,043 ms |
+| Avg response time | 52,749 ms |
+| Min response time | 6,746 ms |
+| Max response time | 57,961 ms |
+
+#### Análisis
+
+- **Request [7]** respondió en 6.7 s porque atrapó la instancia que ya estaba caliente de ejecuciones previas.
+- **Los 9 requests restantes** tardaron ~58 s cada uno: costo real de calcular Fibonacci(1,000,000) con BigInteger en una instancia que acaba de arrancar en frío, sin caché del JIT de Node.js.
+- **Wall-clock total fue 58 s** (no 580 s), confirmando que las 10 peticiones corrieron genuinamente en paralelo. Si fueran secuenciales, el total habría sido la suma de todos los tiempos individuales.
+- **No hubo fallas**: todas las instancias completaron el cálculo dentro del timeout de 10 min del plan Consumption.
+
+### **Parte 2 — FibonacciMemo con memoization**
+Se desplegó `FibonacciMemo` al mismo Function App. La función usa un `Map` a nivel de módulo Node.js para cachear únicamente los valores `nth` solicitados explícitamente, sin almacenar los intermedios (evitando el OutOfMemory que ocurre al guardar todos los valores de 0 a n).
+
+#### Prueba 1 — nth=100,000 (cache hit, instancia caliente con cache previo)
+```json
+{
+  "nth": 100000,
+  "fibonacci": "25974069347221724166...46875",
+  "cacheHit": true,
+  "cachedEntries": 100001
+}
+```
+> La instancia ya tenía cache de una ejecución anterior. `cacheHit: true` y respuesta en milisegundos.
+
+![alt text](imagesEvidence/Memo100000.png)
+
+#### Prueba 2 — nth=100 (cache hit inmediato, misma instancia)
+Al solicitar `nth=100` inmediatamente después, la respuesta fue:
+
+```json
+{
+  "nth": 100,
+  "fibonacci": "354224848179261915075",
+  "cacheHit": true,
+  "cachedEntries": 100001
+}
+```
+La instancia seguía activa y el `Map` conservaba el estado. `nth=100` estaba cubierto porque la implementación almacenaba todos los intermedios de 0 a 100,000.
+
+![alt text](imagesEvidence/Memo100.png)
+
+#### Logs de Azure — Evidencia de tiempos y misma instancia
+![alt text](imagesEvidence/LogsMemo.png)
+
+Ambas invocaciones usaron el mismo `workerId` (`340f9f5c-...`), confirmando que la misma instancia de Node.js atendió los dos requests y el `Map` en memoria se mantuvo entre invocaciones.
+
+
+
+#### Comportamiento tras 5+ minutos de inactividad
+Tras un período de inactividad de 5 a 20 minutos el plan Consumption desaloja la instancia. Al reiniciar el proceso Node.js, el módulo se carga nuevamente desde disco y el `Map` queda vacío. La siguiente invocación devuelve `cacheHit: false` y `cachedEntries: 0`, recalculando el valor completo.
+
+![alt text](imagesEvidence/MemoColdStart.png)
+
+---
+
+### **Limitación de memoria con nth=1,000,000**
+Al intentar invocar `FibonacciMemo` con `nth=1,000,000` usando la implementación que almacenaba todos los valores intermedios (0 a n), la función falló:
+
+```
+2026-04-29T04:56:26 [Error] Executed 'Functions.FibonacciMemo'
+  (Failed, Id=f7afc805-fd3d-4103-ae69-ccb3243c3b6a, Duration=1857ms)
+  → RangeError: Out of memory
+```
+
+**Causa**: el plan Consumption limita la memoria a ~1.5 GB por instancia. Almacenar 1,000,000 objetos BigInteger con cientos de dígitos cada uno supera ese límite.
+
+**Solución implementada**: cachear únicamente el valor explícitamente solicitado usando una ventana deslizante de dos variables para el cálculo. Esto reduce el uso de memoria del cache de O(n) a O(k), donde k es el número de valores distintos solicitados.
+
+---
+
+### **Conclusiones**
+
+- Azure Functions con el plan Consumption escala automáticamente ante carga concurrente, distribuyendo peticiones entre instancias nuevas o existentes sin configuración manual.
+- El cold start es el costo real del escalado en Consumption: en este lab, JIT de Node.js + cálculo BigInteger sumaron ~58 s en instancias nuevas frente a 6.7 s en una instancia caliente.
+- La memoization en memoria funciona correctamente mientras la instancia permanece activa (6–7 ms para valores cacheados), pero no es confiable en serverless por el ciclo de vida efímero y el escalado multi-instancia.
+- Para cache persistente y compartido entre instancias en producción, la solución correcta es **Azure Cache for Redis**.
+- El límite de memoria del plan Consumption (~1.5 GB) impone restricciones concretas en algoritmos que requieren almacenar grandes estructuras — factor de diseño crítico al elegir este plan.
